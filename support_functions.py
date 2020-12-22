@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import cv2 
 import numpy as np
 
-
+#Calculate the x gradient on specific channel and filter based on threshould 
 def x_gradient(channel, threshould ):
 
     # Sobel x

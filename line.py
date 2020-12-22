@@ -1,8 +1,7 @@
 import matplotlib.pyplot as plt
 import cv2 
 import numpy as np
-
-
+from collections import deque
 
 #class lance to hold the lane global information 
 #it contains data for both lines + the curvature and off center information
@@ -12,13 +11,11 @@ class Lane():
         self.right_line = self.Line(n_iter)
         # was the lane detected in the last iteration?
         self.detected = False  
-        #lane midpoint in pixels
-        self.midpoint = None
         #radius of curvature of the lane meters (average of curve for both lines)
         self.curve_m = 0 
         #calibration parameters
         #search from previous margin
-        self.margin = previous_margin
+        self.previous_margin = previous_margin
         # Choose the number of sliding windows
         self.nwindows = nwindows
         # Set the width of the windows +/- margin
@@ -31,17 +28,17 @@ class Lane():
     class Line():
         def __init__(self,n_iter):
             #current x base for line 
-            self.xbase = None     
-            #polynomial coefficients for the most recent fit
-            self.current_fit = [np.array([False])] 
+            self.xbase_hist = deque(maxlen=n_iter)     
+            #average x base location for last n frames 
+            self.xbase_average=None
+            #polynomial coefficients for the most recent n frame fits
+            self.fit_hist = deque(maxlen=n_iter)
+            #polynomial coefficients averaged over the last n iterations
+            self.best_fit = None 
+            #radius of curvature of the line in real units 
+            self.radius_of_curvature = deque(maxlen=n_iter)
             #xfit for most recent fit
             self.current_fitx =None
-            #polynomial coefficients averaged over the last n iterations
-            self.best_fit = collections.deque(maxlen=n_iter)  
-            #average x values of the fitted line over the last n iterations
-            self.bestx = collections.deque(maxlen=n_iter)       
-            #radius of curvature of the line in some units
-            self.radius_of_curvature = collections.deque(maxlen=n_iter)  
 
     #function will be called only in first frame of if the current frame was not able to fit lines
     #search will start again
@@ -52,17 +49,26 @@ class Lane():
         # These will be the starting point for the left and right lines
         midpoint = np.int(histogram.shape[0]//2)
         leftx_base = np.argmax(histogram[:midpoint])
-        rightx_base = np.argmax(histogram[midpoint:]) + midpoint  
-
+        rightx_base = np.argmax(histogram[midpoint:]) + midpoint
+        
+        #append x base for each line then calculate average
+        self.left_line.xbase_hist.append(leftx_base)
+        self.right_line.xbase_hist.append(rightx_base)
+        #average the xbase for best result
+        self.left_line.xbase_average = np.mean(self.left_line.xbase_hist)
+        self.right_line.xbase_average = np.mean(self.right_line.xbase_hist)
+        
         # Set height of windows - based on nwindows above and image shape
         window_height = np.int(binary_warped.shape[0]//self.nwindows)
         # Identify the x and y positions of all nonzero pixels in the image
         nonzero = binary_warped.nonzero()
         nonzeroy = np.array(nonzero[0])
         nonzerox = np.array(nonzero[1])
+        
         # Current positions to be updated later for each window in nwindows
-        leftx_current = leftx_base
-        rightx_current = rightx_base
+        #start position is taken to be the average
+        leftx_current = self.left_line.xbase_average
+        rightx_current = self.right_line.xbase_average
 
 
         # empty lists to receive new left and right lane pixel indices
@@ -89,7 +95,6 @@ class Lane():
             left_lane_inds.append(good_left_inds)
             right_lane_inds.append(good_right_inds)
 
-
                 # If you found > minpix pixels, recenter next window on their mean position
             if len(good_left_inds) > self.minpix:
                 leftx_current = np.int(np.mean(nonzerox[good_left_inds]))
@@ -100,8 +105,10 @@ class Lane():
         try:
             left_lane_inds = np.concatenate(left_lane_inds)
             right_lane_inds = np.concatenate(right_lane_inds)
+            self.detected = True
         except ValueError:
             # Avoids an error if the above is not implemented fully
+            self.detected = False
             pass
 
         # Extract left and right line pixel positions
@@ -110,16 +117,52 @@ class Lane():
         rightx = nonzerox[right_lane_inds]
         righty = nonzeroy[right_lane_inds]
         
-        #update class attributes
-        #save lane mid point for off center calculation
-        self.midpoint=midpoint
-        self.left_line.xbase = leftx_base
-        self.right_line.xbase =rightx_base
-
         
         return leftx, lefty, rightx, righty,
 
 
+    def find_lane_pixels_search_previous(self,binary_warped):
+        
+        #grab search margin outside the previous fit
+        margin = self.previous_margin
+        
+        #grab the polyfit from best fit variable 
+        left_fit= self.left_line.best_fit
+        right_fit=self.right_line.best_fit
+        
+        # Grab activated pixels
+        nonzero = binary_warped.nonzero()
+        nonzeroy = np.array(nonzero[0])
+        nonzerox = np.array(nonzero[1])
+
+        left_lane_inds = ((nonzerox > (left_fit[0]*(nonzeroy**2) + left_fit[1]*nonzeroy + 
+                    left_fit[2] - margin)) & (nonzerox < (left_fit[0]*(nonzeroy**2) + 
+                    left_fit[1]*nonzeroy + left_fit[2] + margin)))
+        right_lane_inds = ((nonzerox > (right_fit[0]*(nonzeroy**2) + right_fit[1]*nonzeroy + 
+                    right_fit[2] - margin)) & (nonzerox < (right_fit[0]*(nonzeroy**2) + 
+                    right_fit[1]*nonzeroy + right_fit[2] + margin)))
+ 
+        # Again, extract left and right line pixel positions
+        leftx = nonzerox[left_lane_inds]
+        lefty = nonzeroy[left_lane_inds] 
+        rightx = nonzerox[right_lane_inds]
+        righty = nonzeroy[right_lane_inds]
+        
+        #update xbases to be used for the vehicle location calculation 
+        #append x base for each line then calculate average.
+        ymax=binary_warped.shape[0]
+              
+        leftx_base = (left_fit[0]*(ymax**2) )+ (left_fit[1]*ymax )+ left_fit[2] #assuming max y
+        rightx_base = (right_fit[0]*(ymax**2)) +( right_fit[1]*ymax) + right_fit[2] #assuming max y
+        self.left_line.xbase_hist.append(leftx_base)
+        self.right_line.xbase_hist.append(rightx_base)
+        #average the xbase for best result
+        self.left_line.xbase_average = np.mean(self.left_line.xbase_hist)
+        self.right_line.xbase_average = np.mean(self.right_line.xbase_hist)
+        
+        
+        
+        return leftx, lefty, rightx, righty 
     
     def fit_polynomial(self,binary_warped):
         #if first frame or last frame didn't detect a lane start searching from begining otherwise
@@ -127,67 +170,38 @@ class Lane():
         if(self.detected == False):        
             # Find our lane pixels first
             leftx, lefty, rightx, righty = self.find_lane_pixels_sliding_window(binary_warped)
- 
         else:
-
-            leftx, lefty, rightx, righty = self.find_lane_pixels_sliding_window(binary_warped)
+            leftx, lefty, rightx, righty = self.find_lane_pixels_search_previous(binary_warped)
        
         
         # Fit a second order polynomial to each using `np.polyfit`
         left_fit = np.polyfit(lefty, leftx, 2)   #retunrs A,B and C coffiecents
         right_fit = np.polyfit(righty, rightx, 2) #retunrs A,B and C coffiecents 
+    
         
         return left_fit,right_fit
     
     
-    def measure_curvature_real(self,left_fit,right_fit,size,ym_per_pix,xm_per_pix):
+    def measure_curvature_real(self,left_fit,right_fit,ym_per_pix,xm_per_pix,size):
 
         y_eval = size
 
         # Calculation of R_curve (radius of curvature)
-        left_curverad = ((1 + (2*left_fit[0]*y_eval*ym_per_pix + left_fit[1])**2)**1.5) / np.absolute(2*left_fit[0])
-        right_curverad = ((1 + (2*right_fit[0]*y_eval*ym_per_pix + right_fit[1])**2)**1.5) / np.absolute(2*right_fit[0])
+        left_curve_real = ((1 + (2*left_fit[0]*y_eval*ym_per_pix + left_fit[1])**2)**1.5) / np.absolute(2*left_fit[0])
+        right_curve_real = ((1 + (2*right_fit[0]*y_eval*ym_per_pix + right_fit[1])**2)**1.5) / np.absolute(2*right_fit[0])
 
-        return left_curverad, right_curverad
-    
-    def lane_fit_sanity_check(self,left_curve,right_curve):
-        status=True
-        
-        if((self.left_line.radius_of_curvature!=None) & (self.right_line.radius_of_curvature!=None)):
-            #check line curve is almost the same 
-            if(abs(left_curve-self.left_line.radius_of_curvature)>1000):
-                status=False
-            if(abs(right_curve-self.right_line.radius_of_curvature)>1000):
-                status=False
-                
-            print("left_curve:" , left_curve)
-            print("right_curve:" , right_curve)
-
-        
-        return status
-    
-    def get_lane_highlighted(self,binary_warped,ym_per_pix,xm_per_pix):
-    
-        
-        left_fit,right_fit =self.fit_polynomial(binary_warped)
-        left_curve_real,right_curve_real = self.measure_curvature_real(
-            left_fit,right_fit,binary_warped.shape[0],ym_per_pix,xm_per_pix)
-
-        #save current fit
-        self.left_line.current_fit   =left_fit
-        self.right_line.current_fit  =right_fit
-            
         #save current curvature
         self.left_line.radius_of_curvature = left_curve_real
         self.right_line.radius_of_curvature = right_curve_real
        
-        curvature_average=(left_curve_real+right_curve_real+self.curve_m)/3
-        self.curve_m = curvature_average
+        curvature_average=(left_curve_real+right_curve_real)/2
         curve_text="Current Curve is : "+(str(int(curvature_average)))+" m"
         
-
+        return curve_text
+    
+    def measure_vehicle_offset(self,binary_warped,xm_per_pix):
         #save current vehicle offset text
-        delta=(self.right_line.xbase-self.left_line.xbase )-(binary_warped.shape[1]/2)
+        delta=(self.right_line.xbase_average-self.left_line.xbase_average )-(binary_warped.shape[1]/2)
         if(delta < 0):
             vehicle_offset_text="Vehicle is "+str(round(xm_per_pix*abs(delta),2))+"m left off the center"
         elif(delta>0):
@@ -195,15 +209,47 @@ class Lane():
         else:
             vehicle_offset_text="Vehicle is 0 m off the center"  
         
+        return vehicle_offset_text
+     
+    #not completed yet, still need updates
+    def lane_fit_sanity_check(self,left_fit,right_fit):
+        status=True
+        
+        
+        
+        return status
+    
+    def get_lane_highlighted(self,binary_warped,ym_per_pix,xm_per_pix):
+    
+        
+        left_fit,right_fit =self.fit_polynomial(binary_warped)
+        
+        curve_text = self.measure_curvature_real(left_fit,right_fit,ym_per_pix,xm_per_pix,binary_warped.shape[0])
+        vehicle_offset_text = self.measure_vehicle_offset(binary_warped,xm_per_pix)
+
+        #check if new fit makes sense before using it  
+        if(self.lane_fit_sanity_check(left_fit,right_fit)):
+            #save value in class and append to calculate the average on last n frames 
+            self.left_line.fit_hist.append(left_fit)
+            self.right_line.fit_hist.append(right_fit)        
+            self.left_line.best_fit = np.mean(self.left_line.fit_hist, axis=0) 
+            self.right_line.best_fit = np.mean(self.right_line.fit_hist, axis=0)
+            left_fit=self.left_line.best_fit
+            right_fit=self.right_line.best_fit 
+        else:
+            #overwrite with the best fit 
+            left_fit=self.left_line.best_fit
+            right_fit=self.right_line.best_fit 
+            self.detected = False
+            
         # Generate x and y values for plotting
         ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0] )
         try:
             left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
             right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
             #save current line xfit
-            self.left_line.current_fitx
-            self.right_line.current_fitx
-            
+            self.left_line.current_fitx = left_fitx
+            self.right_line.current_fitx = right_fitx
             self.detected = True  #mark lane as detected
         except TypeError:
             # use last frame lines 
@@ -211,17 +257,14 @@ class Lane():
             left_fitx = self.left_line.current_fitx
             right_fitx  = self.right_line.current_fitx
             self.detected = False #mark lane as not detected and start search from next frame and keep old data from previous n frames
-        
-        
+       
+
         lane_highlight_left=  np.array([np.transpose(np.vstack([left_fitx, ploty]))])
         lane_highlight_right=  np.array([np.flipud(np.transpose(np.vstack([right_fitx, ploty])))])
         lane_highlight_pts = np.hstack((lane_highlight_left, lane_highlight_right))
-        
-       
-        
+                
         out_img = np.dstack((binary_warped, binary_warped, binary_warped))
         window_img = np.zeros_like(out_img)
         cv2.fillPoly(window_img,np.int_([lane_highlight_pts]),(0,255,0))
      
-
         return window_img,curve_text,vehicle_offset_text
