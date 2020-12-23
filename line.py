@@ -36,7 +36,7 @@ class Lane():
             #polynomial coefficients averaged over the last n iterations
             self.best_fit = None 
             #radius of curvature of the line in real units 
-            self.radius_of_curvature = deque(maxlen=n_iter)
+            self.radius_of_curvature = None
             #xfit for most recent fit
             self.current_fitx =None
 
@@ -101,6 +101,7 @@ class Lane():
             if len(good_right_inds) > self.minpix:        
                 rightx_current = np.int(np.mean(nonzerox[good_right_inds]))
 
+    
         # Concatenate the arrays of indices (previously was a list of lists of pixels)
         try:
             left_lane_inds = np.concatenate(left_lane_inds)
@@ -212,14 +213,23 @@ class Lane():
         return vehicle_offset_text
      
     #not completed yet, still need updates
-    def lane_fit_sanity_check(self,left_fit,right_fit):
+    def lane_fit_sanity_check(self,left_fit,right_fit,xm_per_pix,lane_width_range,curve_delta_max):
         status=True
         
+        calculated_curve_delta= abs(self.left_line.radius_of_curvature - self.right_line.radius_of_curvature)
+        
+        #checking top of the lane width (y = 0)  
+        calculated_lane_width = (right_fit[2] - left_fit[2])*xm_per_pix
+        if((calculated_lane_width>lane_width_range[1])|(calculated_lane_width<lane_width_range[0])):
+            status=False
+        #checking if delta between right and left curve is more than max
+        if(calculated_curve_delta>curve_delta_max):
+            status=False
         
         
         return status
     
-    def get_lane_highlighted(self,binary_warped,ym_per_pix,xm_per_pix):
+    def get_lane_highlighted(self,binary_warped,ym_per_pix,xm_per_pix,lane_width_range,curve_delta_max):
     
         
         left_fit,right_fit =self.fit_polynomial(binary_warped)
@@ -228,7 +238,7 @@ class Lane():
         vehicle_offset_text = self.measure_vehicle_offset(binary_warped,xm_per_pix)
 
         #check if new fit makes sense before using it  
-        if(self.lane_fit_sanity_check(left_fit,right_fit)):
+        if(self.lane_fit_sanity_check(left_fit,right_fit,xm_per_pix,lane_width_range,curve_delta_max)):
             #save value in class and append to calculate the average on last n frames 
             self.left_line.fit_hist.append(left_fit)
             self.right_line.fit_hist.append(right_fit)        
@@ -240,6 +250,13 @@ class Lane():
             #overwrite with the best fit 
             left_fit=self.left_line.best_fit
             right_fit=self.right_line.best_fit 
+            #removelast entered xbase and curve
+            self.left_line.xbase_hist.pop()
+            self.right_line.xbase_hist.pop()
+            #clear the line curve 
+            self.left_line.radius_of_curvature=self.curve_m
+            self.right_line.radius_of_curvature=self.curve_m
+            #Use sliding window method again
             self.detected = False
             
         # Generate x and y values for plotting
